@@ -13,7 +13,6 @@ import (
 	"github.com/mdp/qrterminal/v3"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/sigurn/crc16"
 	tunnelConfig "github.com/ton-blockchain/adnl-tunnel/config"
 	"github.com/ton-blockchain/adnl-tunnel/tunnel"
 	"github.com/ton-utils/reverse-proxy/config"
@@ -26,7 +25,6 @@ import (
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
 	"github.com/xssnick/tonutils-go/ton/dns"
-	"io"
 	regularLog "log"
 	"net"
 	"net/http"
@@ -37,15 +35,6 @@ import (
 	"strings"
 	"time"
 )
-
-type Config struct {
-	ProxyPass        string `json:"proxy_pass"`
-	PrivateKey       []byte `json:"private_key"`
-	ExternalIP       string `json:"external_ip"`
-	ListenIP         string `json:"listen_ip"`
-	NetworkConfigURL string `json:"network_config_url"`
-	Port             uint16 `json:"port"`
-}
 
 var FlagDomain = flag.String("domain", "", "domain to configure")
 var FlagDebug = flag.Bool("debug", false, "more logs")
@@ -129,10 +118,11 @@ func main() {
 
 	log.Info().Str("version", Version).Str("build", GitCommit).Msg("Starting Tonutils Reverse Proxy")
 
-	cfg, err := loadConfig()
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to load config")
 	}
+	log.Info().Str("IP", cfg.ExternalIP).Msg("Server external IP")
 
 	netCfg, err := liteclient.GetConfigFromUrl(context.Background(), cfg.NetworkConfigURL)
 	if err != nil {
@@ -256,87 +246,6 @@ func main() {
 	if err = s.ListenAndServe(fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.Port)); err != nil {
 		log.Fatal().Err(err).Msg("Failed to listen and serve")
 	}
-}
-
-func getPublicIP() (string, error) {
-	req, err := http.Get("http://ip-api.com/json/")
-	if err != nil {
-		return "", err
-	}
-	defer req.Body.Close()
-
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var ip struct {
-		Query string
-	}
-	err = json.Unmarshal(body, &ip)
-	if err != nil {
-		return "", err
-	}
-
-	return ip.Query, nil
-}
-
-func loadConfig() (*Config, error) {
-	var cfg Config
-
-	file := "./config.json"
-	data, err := os.ReadFile(file)
-	if err != nil {
-		var srvKey ed25519.PrivateKey
-		_, srvKey, err = ed25519.GenerateKey(nil)
-		if err != nil {
-			return nil, err
-		}
-		cfg.PrivateKey = srvKey.Seed()
-		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
-
-		cfg.ExternalIP, err = getPublicIP()
-		if err != nil {
-			return nil, err
-		}
-		cfg.ListenIP = "0.0.0.0"
-
-		// generate consistent port
-		cfg.Port = 9000 + (crc16.Checksum([]byte(cfg.ExternalIP), crc16.MakeTable(crc16.CRC16_XMODEM)) % 5000)
-
-		cfg.ProxyPass = "http://127.0.0.1:80/"
-
-		data, err = json.MarshalIndent(cfg, "", "\t")
-		if err != nil {
-			return nil, err
-		}
-
-		err = os.WriteFile(file, data, 0644) // rw-r--r--
-		if err != nil {
-			return nil, err
-		}
-
-		return &cfg, nil
-	}
-
-	err = json.Unmarshal(data, &cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	// backwards compatibility with old configs
-	if cfg.NetworkConfigURL == "" {
-		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
-	}
-
-	cfg.ExternalIP = envOrVal("EXTERNAL_IP", cfg.ExternalIP).(string)
-	cfg.ListenIP = envOrVal("LISTEN_IP", cfg.ListenIP).(string)
-	cfg.Port = envOrVal("LISTEN_PORT", cfg.Port).(uint16)
-	cfg.ProxyPass = envOrVal("PROXY_PASS", cfg.ProxyPass).(string)
-	cfg.PrivateKey = envOrVal("PRIVATE_KEY", cfg.PrivateKey).([]byte)
-	cfg.NetworkConfigURL = envOrVal("NETWORK_CONFIG_URL", cfg.NetworkConfigURL).(string)
-
-	return &cfg, nil
 }
 
 func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []byte) {
